@@ -1,0 +1,4 @@
+:root {
+  /* Fondo crema cálido, al estilo BioWellness (en vez del blanco por defecto de Mantine). */
+  --mantine-color-body: #f7f2ee;
+}
