@@ -12,6 +12,7 @@ se lo otorga, acotado a su propio compartimento FHIR (`%patient`):
 |---|---|---|
 | `Patient` | leer (solo el suyo) | que la app muestre su nombre/perfil |
 | `DocumentReference` | leer + **crear** (lo suyo) | **subir el PDF** |
+| `Consent` | leer + **crear** (lo suyo) | **registrar su autorización** al enviar |
 | `Binary` | leer + crear | guardar el contenido del PDF |
 | `DiagnosticReport` | leer (lo suyo) | ver el informe que arma el Bot |
 | `Observation` | leer (lo suyo) | ver cada analito que arma el Bot |
@@ -54,6 +55,9 @@ y **crear** `Observation`/`DiagnosticReport` de *cualquier* paciente del Project
 acceso de servicio (admin del Project o una AccessPolicy aparte más amplia) — no le pongas la
 policy de paciente.
 
-## Pendiente del Paso 4
+## Consent
 
-- [ ] `Consent`: registrar la autorización explícita del paciente al enviar cada estudio.
+Al enviar un estudio, el portal crea un recurso `Consent` (`status: active`,
+`scope: patient-privacy`) vinculado al `DocumentReference` (`sourceReference` y
+`provision.data`). La casilla de autorización en el formulario es obligatoria, así
+que **no hay subida sin consentimiento registrado**.

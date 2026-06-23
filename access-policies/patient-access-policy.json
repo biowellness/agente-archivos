@@ -12,6 +12,10 @@
       "criteria": "DocumentReference?_compartment=%patient"
     },
     {
+      "resourceType": "Consent",
+      "criteria": "Consent?_compartment=%patient"
+    },
+    {
       "resourceType": "DiagnosticReport",
       "criteria": "DiagnosticReport?_compartment=%patient",
       "readonly": true

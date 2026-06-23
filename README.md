@@ -31,8 +31,8 @@ Bot  →  parsea el PDF  →  crea Observation / DiagnosticReport
 - [x] **Paso 1 — Autenticación** (login + selector de institución por `projectId`).
 - [x] **Paso 2 — DocumentReference** (subir el PDF: `Binary` + `DocumentReference`).
 - [x] **Paso 3 — Bot** (Subscription → Claude parsea el PDF → `Observation`/`DiagnosticReport`). Ver [`bots/`](./bots).
-- [x] **Paso 4 (parcial) — AccessPolicy** (cada paciente ve/sube solo lo suyo). Ver [`access-policies/`](./access-policies).
-- [ ] **Paso 4 — Consent** (autorización explícita del paciente al enviar cada estudio).
+- [x] **Paso 4 — AccessPolicy** (cada paciente ve/sube solo lo suyo). Ver [`access-policies/`](./access-policies).
+- [x] **Paso 4 — Consent** (casilla obligatoria + recurso `Consent` vinculado al estudio).
 
 ## Configuración
 
