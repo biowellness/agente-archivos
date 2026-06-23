@@ -1,11 +1,14 @@
-import { Alert, Button, FileInput, Stack, Textarea } from '@mantine/core';
+import { Alert, Button, Checkbox, FileInput, Stack, Textarea } from '@mantine/core';
 import { showNotification } from '@mantine/notifications';
 import { createReference, normalizeErrorString } from '@medplum/core';
-import type { DocumentReference, Patient } from '@medplum/fhirtypes';
+import type { Consent, DocumentReference, Patient } from '@medplum/fhirtypes';
 import { useMedplum, useMedplumProfile } from '@medplum/react';
 import { IconCheck, IconUpload, IconX } from '@tabler/icons-react';
 import { useState } from 'react';
 import type { JSX } from 'react';
+
+const CONSENT_TEXT =
+  'Autorizo el envío de este resultado de laboratorio y su procesamiento para incorporarlo a mi historia clínica electrónica.';
 
 const MAX_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
 
@@ -23,10 +26,11 @@ export function UploadLabReport(): JSX.Element {
 
   const [file, setFile] = useState<File | null>(null);
   const [description, setDescription] = useState('');
+  const [consent, setConsent] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit(): Promise<void> {
-    if (!file) {
+    if (!file || !consent) {
       return;
     }
     if (file.type !== 'application/pdf') {
@@ -61,14 +65,42 @@ export function UploadLabReport(): JSX.Element {
         } satisfies Omit<Partial<DocumentReference>, 'content'>,
       });
 
+      // Consentimiento explícito del paciente, vinculado a este documento.
+      await medplum.createResource<Consent>({
+        resourceType: 'Consent',
+        status: 'active',
+        scope: {
+          coding: [
+            {
+              system: 'http://terminology.hl7.org/CodeSystem/consentscope',
+              code: 'patient-privacy',
+              display: 'Privacy Consent',
+            },
+          ],
+        },
+        category: [
+          { coding: [{ system: 'http://loinc.org', code: '59284-0', display: 'Consent Document' }] },
+        ],
+        patient: createReference(profile),
+        dateTime: new Date().toISOString(),
+        performer: [createReference(profile)],
+        sourceReference: createReference(docRef),
+        policyRule: { text: CONSENT_TEXT },
+        provision: {
+          type: 'permit',
+          data: [{ meaning: 'instance', reference: createReference(docRef) }],
+        },
+      });
+
       showNotification({
         color: 'teal',
         icon: <IconCheck size={16} />,
         title: 'Resultado enviado',
-        message: `Se guardó correctamente. Un asistente lo procesará en breve. (ID: ${docRef.id})`,
+        message: `Se guardó correctamente con tu consentimiento. Un asistente lo procesará en breve. (ID: ${docRef.id})`,
       });
       setFile(null);
       setDescription('');
+      setConsent(false);
     } catch (err) {
       showNotification({
         color: 'red',
@@ -108,12 +140,18 @@ export function UploadLabReport(): JSX.Element {
         minRows={2}
       />
 
+      <Checkbox
+        checked={consent}
+        onChange={(e) => setConsent(e.currentTarget.checked)}
+        label={CONSENT_TEXT}
+      />
+
       <Button
         onClick={() => {
           handleSubmit().catch(console.error);
         }}
         loading={submitting}
-        disabled={!file}
+        disabled={!file || !consent}
         leftSection={<IconUpload size={16} />}
       >
         Enviar resultado
