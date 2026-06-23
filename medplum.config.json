@@ -1,0 +1,10 @@
+{
+  "bots": [
+    {
+      "name": "parse-lab-report",
+      "id": "REEMPLAZAR_POR_EL_BOT_ID",
+      "source": "bots/src/parse-lab-report.ts",
+      "dist": "bots/dist/parse-lab-report.js"
+    }
+  ]
+}
