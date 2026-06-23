@@ -16,7 +16,7 @@ export function App(): JSX.Element | null {
   }
 
   return (
-    <AppShell logo={<BrandLogo size={22} />}>
+    <AppShell logo={<BrandLogo size={22} />} headerSearchDisabled>
       <ErrorBoundary>
         <Suspense fallback={<Loading />}>
           <Routes>

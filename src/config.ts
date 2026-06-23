@@ -11,11 +11,14 @@ export interface MedplumProjectOption {
 
 /**
  * Instituciones disponibles para iniciar sesión.
- * Se descartan las que no tengan un Project ID configurado.
+ * Se descartan las que no tengan un Project ID configurado y se eliminan
+ * duplicados por id (ej. si dos variables apuntan al mismo Project).
  */
 export const MEDPLUM_PROJECTS: MedplumProjectOption[] = (
   [
     { id: import.meta.env.MEDPLUM_PROJECT_ID_BIO, label: 'Bio' },
     { id: import.meta.env.MEDPLUM_PROJECT_ID_RECEPCION, label: 'Recepción' },
   ] satisfies { id: string | undefined; label: string }[]
-).filter((p): p is MedplumProjectOption => Boolean(p.id));
+)
+  .filter((p): p is MedplumProjectOption => Boolean(p.id))
+  .filter((p, i, arr) => arr.findIndex((o) => o.id === p.id) === i);
