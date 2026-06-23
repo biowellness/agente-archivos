@@ -1,4 +1,4 @@
-import { Stack, Title } from '@mantine/core';
+import { Stack, Text, Title } from '@mantine/core';
 import type { Patient } from '@medplum/fhirtypes';
 import { Document, ResourceName, useMedplumProfile } from '@medplum/react';
 import type { JSX } from 'react';
@@ -11,9 +11,14 @@ export function HomePage(): JSX.Element {
   return (
     <Document>
       <Stack gap="lg">
-        <Title order={2}>
-          Hola <ResourceName value={profile} /> 👋
-        </Title>
+        <Stack gap={2}>
+          <Text c="dimmed" fz="sm">
+            Hola,
+          </Text>
+          <Title order={2}>
+            <ResourceName value={profile} />
+          </Title>
+        </Stack>
         <UploadLabReport />
       </Stack>
     </Document>

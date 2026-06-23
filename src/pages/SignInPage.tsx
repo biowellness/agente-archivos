@@ -1,8 +1,9 @@
 import { SegmentedControl, Stack, Text, Title } from '@mantine/core';
-import { Logo, SignInForm } from '@medplum/react';
+import { SignInForm } from '@medplum/react';
 import { useState } from 'react';
 import type { JSX } from 'react';
 import { useNavigate } from 'react-router';
+import { BrandLogo } from '../components/BrandLogo';
 import { MEDPLUM_PROJECTS } from '../config';
 
 export function SignInPage(): JSX.Element {
@@ -20,8 +21,8 @@ export function SignInPage(): JSX.Element {
       clientId={import.meta.env.MEDPLUM_CLIENT_ID}
       onSuccess={() => navigate('/')?.catch(console.error)}
     >
-      <Logo size={32} />
-      <Title order={3}>Ingresar a Agente Archivos</Title>
+      <BrandLogo size={28} />
+      <Title order={3}>Ingresar</Title>
 
       {MEDPLUM_PROJECTS.length > 1 && (
         <Stack gap={4} w="100%">

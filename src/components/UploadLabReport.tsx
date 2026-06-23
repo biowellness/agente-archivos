@@ -1,4 +1,4 @@
-import { Alert, Button, Checkbox, FileInput, Stack, Textarea } from '@mantine/core';
+import { Button, Checkbox, FileInput, Paper, Stack, Text, Textarea, Title } from '@mantine/core';
 import { showNotification } from '@mantine/notifications';
 import { createReference, normalizeErrorString } from '@medplum/core';
 import type { Consent, DocumentReference, Patient } from '@medplum/fhirtypes';
@@ -115,10 +115,15 @@ export function UploadLabReport(): JSX.Element {
 
   return (
     <Stack gap="md" maw={540}>
-      <Alert color="teal" variant="light">
-        Subí el PDF de tu resultado de laboratorio. Quedará en tu historia clínica electrónica y un asistente lo
-        procesará automáticamente.
-      </Alert>
+      <Paper radius="lg" p="lg" bg="brand.9" c="white">
+        <Title order={4} c="white">
+          Cargá tu resultado
+        </Title>
+        <Text mt={6} size="sm" c="gray.3">
+          Subí el PDF de tu laboratorio. Queda en tu historia clínica electrónica y un asistente lo procesa
+          automáticamente.
+        </Text>
+      </Paper>
 
       <FileInput
         label="Archivo PDF"
@@ -153,6 +158,8 @@ export function UploadLabReport(): JSX.Element {
         loading={submitting}
         disabled={!file || !consent}
         leftSection={<IconUpload size={16} />}
+        size="md"
+        fullWidth
       >
         Enviar resultado
       </Button>
