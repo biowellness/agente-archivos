@@ -1,0 +1,28 @@
+{
+  "resourceType": "AccessPolicy",
+  "name": "Paciente — Agente Archivos",
+  "resource": [
+    {
+      "resourceType": "Patient",
+      "criteria": "Patient?_compartment=%patient",
+      "readonly": true
+    },
+    {
+      "resourceType": "DocumentReference",
+      "criteria": "DocumentReference?_compartment=%patient"
+    },
+    {
+      "resourceType": "DiagnosticReport",
+      "criteria": "DiagnosticReport?_compartment=%patient",
+      "readonly": true
+    },
+    {
+      "resourceType": "Observation",
+      "criteria": "Observation?_compartment=%patient",
+      "readonly": true
+    },
+    {
+      "resourceType": "Binary"
+    }
+  ]
+}
