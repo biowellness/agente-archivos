@@ -19,6 +19,7 @@ export default defineConfig({
     host: 'portal.medplum.com.ar',
     allowedHosts: true,
     port: 3001,
+  },
   server: {
     host: 'localhost',
     port: 3001,
