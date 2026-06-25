@@ -1,54 +1,78 @@
-import Anthropic from '@anthropic-ai/sdk';
-import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { BotEvent, MedplumClient, createReference, getReferenceString } from '@medplum/core';
 import type { DiagnosticReport, DocumentReference, Observation, Patient, Reference } from '@medplum/fhirtypes';
-import * as z from 'zod/v4';
 
 /**
  * Bot: Parseo de PDF de laboratorio → DiagnosticReport + Observations.
  *
- * Se dispara por una Subscription cuando se crea un DocumentReference con un PDF.
- * 1. Descarga el PDF (Binary) del DocumentReference.
- * 2. Se lo manda a Claude (modelo claude-opus-4-8) como documento nativo.
- * 3. Claude devuelve los analitos en JSON validado (structured outputs).
- * 4. El Bot crea una Observation por analito y un DiagnosticReport que las agrupa,
- *    todo vinculado al paciente (subject del DocumentReference).
+ * Se dispara por una Subscription al crearse/actualizarse un DocumentReference con PDF.
+ * Llama a la API de Claude por `fetch` (SIN @anthropic-ai/sdk) para que el Bot quede
+ * self-contained: en el runtime de Medplum solo está disponible @medplum/core, no
+ * dependencias npm externas. Usa structured outputs (JSON Schema) para recibir los
+ * analitos validados y los mapea a Observation + DiagnosticReport.
  *
- * Secret requerido en el Project de Medplum: ANTHROPIC_API_KEY.
+ * Secret requerido en el Project: ANTHROPIC_API_KEY.
  */
 
-// --- Esquema de extracción (lo que pedimos a Claude) ---
-const ObservationItem = z.object({
-  name: z.string().describe('Nombre del analito tal como aparece en el PDF (ej. "Glucosa")'),
-  loincCode: z.string().nullable().describe('Código LOINC solo si es seguro; de lo contrario null'),
-  valueNumber: z.number().nullable().describe('Valor numérico; null si el resultado es cualitativo'),
-  valueText: z.string().nullable().describe('Valor cualitativo/textual (ej. "Positivo"); null si es numérico'),
-  unit: z.string().nullable().describe('Unidad tal como figura (ej. "mg/dL")'),
-  referenceRange: z.string().nullable().describe('Rango de referencia textual si aparece'),
-  interpretation: z
-    .enum(['low', 'normal', 'high', 'abnormal', 'unknown'])
-    .describe('Interpretación respecto del rango de referencia'),
-});
+interface LabItem {
+  name: string;
+  loincCode: string | null;
+  valueNumber: number | null;
+  valueText: string | null;
+  unit: string | null;
+  referenceRange: string | null;
+  interpretation: 'low' | 'normal' | 'high' | 'abnormal' | 'unknown';
+}
 
-const LabReport = z.object({
-  reportDate: z.string().nullable().describe('Fecha del informe en formato YYYY-MM-DD si está disponible'),
-  performer: z.string().nullable().describe('Nombre del laboratorio que emite el informe'),
-  observations: z.array(ObservationItem),
-});
+interface LabReport {
+  reportDate: string | null;
+  performer: string | null;
+  observations: LabItem[];
+}
+
+const NULLABLE_STRING = { anyOf: [{ type: 'string' }, { type: 'null' }] };
+const NULLABLE_NUMBER = { anyOf: [{ type: 'number' }, { type: 'null' }] };
+
+// JSON Schema para structured outputs (additionalProperties:false + todo en required).
+const LAB_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    reportDate: NULLABLE_STRING,
+    performer: NULLABLE_STRING,
+    observations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          name: { type: 'string' },
+          loincCode: NULLABLE_STRING,
+          valueNumber: NULLABLE_NUMBER,
+          valueText: NULLABLE_STRING,
+          unit: NULLABLE_STRING,
+          referenceRange: NULLABLE_STRING,
+          interpretation: { type: 'string', enum: ['low', 'normal', 'high', 'abnormal', 'unknown'] },
+        },
+        required: ['name', 'loincCode', 'valueNumber', 'valueText', 'unit', 'referenceRange', 'interpretation'],
+      },
+    },
+  },
+  required: ['reportDate', 'performer', 'observations'],
+};
 
 const EXTRACTION_PROMPT = `Sos un asistente clínico que extrae resultados de un PDF de laboratorio.
 Devolvé únicamente los analitos presentes en el documento. No inventes valores.
 Reglas:
 - Un ítem por analito.
-- valueNumber: el valor numérico. Si el resultado es cualitativo, dejá valueNumber en null y completá valueText.
-- unit: la unidad tal como figura.
+- valueNumber: el valor numérico (convertí coma decimal a punto). Si el resultado es cualitativo,
+  dejá valueNumber en null y completá valueText (ej. "Positivo+", "No Contiene", "Escasas").
+- unit: la unidad tal como figura (ej. "mg/dL").
 - referenceRange: el rango de referencia textual si aparece.
 - loincCode: solo si conocés el código LOINC con seguridad; si no, null.
 - interpretation: low/normal/high/abnormal según el rango; unknown si no se puede determinar.
 - reportDate en formato YYYY-MM-DD y performer (nombre del laboratorio) si están disponibles.
 Si el PDF no contiene resultados de laboratorio, devolvé observations como lista vacía.`;
 
-// Mapeo a los códigos FHIR de interpretación (HL7 v3 ObservationInterpretation).
 const INTERPRETATION: Record<string, { code: string; display: string }> = {
   low: { code: 'L', display: 'Low' },
   high: { code: 'H', display: 'High' },
@@ -58,6 +82,49 @@ const INTERPRETATION: Record<string, { code: string; display: string }> = {
 
 function toFhirDate(value: string | null | undefined): string | undefined {
   return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : undefined;
+}
+
+async function extractWithClaude(apiKey: string, base64Pdf: string): Promise<LabReport> {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-8',
+      max_tokens: 16000,
+      thinking: { type: 'adaptive' },
+      output_config: { format: { type: 'json_schema', schema: LAB_SCHEMA } },
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64Pdf } },
+            { type: 'text', text: EXTRACTION_PROMPT },
+          ],
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Anthropic API ${response.status}: ${await response.text()}`);
+  }
+
+  const data = (await response.json()) as {
+    stop_reason?: string;
+    content?: { type: string; text?: string }[];
+  };
+  if (data.stop_reason === 'refusal') {
+    throw new Error('Claude rechazó la solicitud (refusal).');
+  }
+  const text = data.content?.find((b) => b.type === 'text' && b.text)?.text;
+  if (!text) {
+    throw new Error('Claude no devolvió contenido de texto estructurado.');
+  }
+  return JSON.parse(text) as LabReport;
 }
 
 export async function handler(
@@ -92,35 +159,14 @@ export async function handler(
   const blob = await medplum.download(attachment.url);
   const base64Pdf = Buffer.from(await blob.arrayBuffer()).toString('base64');
 
-  // 3. Extraer los datos con Claude.
+  // 3. Extraer los datos con Claude (fetch directo).
   const apiKey = event.secrets['ANTHROPIC_API_KEY']?.valueString;
   if (!apiKey) {
     throw new Error('Falta el secret ANTHROPIC_API_KEY en el Project de Medplum.');
   }
-  const anthropic = new Anthropic({ apiKey });
-  const response = await anthropic.messages.parse({
-    model: 'claude-opus-4-8',
-    max_tokens: 8000,
-    thinking: { type: 'adaptive' },
-    output_config: { format: zodOutputFormat(LabReport) },
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64Pdf } },
-          { type: 'text', text: EXTRACTION_PROMPT },
-        ],
-      },
-    ],
-  });
+  const report = await extractWithClaude(apiKey, base64Pdf);
 
-  const report = response.parsed_output;
-  if (!report) {
-    throw new Error('Claude no devolvió datos estructurados.');
-  }
-
-  // En el portal de pacientes el subject es siempre un Patient (el DocumentReference
-  // lo tipa más amplio, así que lo acotamos para Observation/DiagnosticReport).
+  // En el portal de pacientes el subject es siempre un Patient.
   const subject = docRef.subject as Reference<Patient> | undefined;
   const effectiveDateTime = toFhirDate(report.reportDate) ?? docRef.date;
   const docRefReference = createReference(docRef);
