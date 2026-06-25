@@ -1,25 +1,28 @@
 # AccessPolicy — Paso 4 (control de acceso)
 
-`patient-access-policy.json` resuelve el error **`Forbidden` (403)** al subir un PDF y, a la vez,
-garantiza que **cada paciente vea y suba únicamente lo suyo**.
+`patient-access-policy.json` es la policy real del portal (**`Paciente — Portal`**): resuelve el
+error **`Forbidden` (403)** al subir un PDF y, a la vez, acota a cada paciente a **lo suyo** (`%patient`).
 
-## Por qué hace falta
+> ⚠️ **Corrección aplicada:** el criterio de `Consent` decía `Consent?subject=%patient`, pero en
+> FHIR R4 `Consent` no tiene `subject` sino `patient`. Quedó como `Consent?patient=%patient`
+> (coincide con cómo el front crea el Consent). Sin esto, el paso del Consent daría 403.
 
-El paciente no tenía permiso para crear `Binary` + `DocumentReference`. Esta AccessPolicy
-se lo otorga, acotado a su propio compartimento FHIR (`%patient`):
+## Qué habilita (lo relevante para la subida)
 
 | Recurso | Permiso | Para qué |
 |---|---|---|
-| `Patient` | leer (solo el suyo) | que la app muestre su nombre/perfil |
-| `DocumentReference` | leer + **crear** (lo suyo) | **subir el PDF** |
-| `Consent` | leer + **crear** (lo suyo) | **registrar su autorización** al enviar |
-| `Binary` | leer + crear | guardar el contenido del PDF |
-| `DiagnosticReport` | leer (lo suyo) | ver el informe que arma el Bot |
-| `Observation` | leer (lo suyo) | ver cada analito que arma el Bot |
+| `Binary` | crear/leer (interacciones explícitas) | guardar el contenido del PDF |
+| `DocumentReference` | crear + leer (lo suyo) | **subir el PDF** |
+| `Consent` | crear + leer (lo suyo) | **registrar la autorización** |
+| `Patient` | leer/editar (su perfil) | mostrar/actualizar sus datos |
+| `Observation` | crear + leer (lo suyo) | sus biomarcadores (los del laboratorio los crea el Bot) |
+| `DiagnosticReport` | **readonly** | ver el informe que arma el Bot |
 
-> `%patient` lo enlaza Medplum automáticamente al perfil del paciente cuando la
-> `ProjectMembership` apunta a un `Patient`. El paciente **no** puede modificar los
-> `DiagnosticReport`/`Observation` (son `readonly`): esos los crea el Bot.
+Además da **lectura** del resto del portal (turnos, cobertura, plan, medicación, tareas) y de los
+catálogos (cuestionarios, agenda, profesionales, organización).
+
+> `%patient` lo enlaza Medplum automáticamente cuando la `ProjectMembership` apunta a un `Patient`.
+> Los `DiagnosticReport` son `readonly`: los arma el Bot, el paciente no los edita.
 
 ## Cómo aplicarla
 
@@ -29,7 +32,7 @@ se lo otorga, acotado a su propio compartimento FHIR (`%patient`):
 2. **Crear el recurso**: barra de búsqueda → `AccessPolicy` → *New* → pestaña *JSON* →
    pegá el contenido de `patient-access-policy.json` → *Save*.
 3. **Asignarla al paciente**: *Project Admin → Users* → elegí al paciente
-   (ej. *Mis Caminatas*) → campo **Access Policy** → seleccioná *"Paciente — Agente Archivos"* → *Save*.
+   (ej. *Mis Caminatas*) → campo **Access Policy** → seleccioná *"Paciente — Portal"* → *Save*.
 4. El paciente cierra sesión y vuelve a entrar. Reintentá la subida: el 403 desaparece.
 
 ### Opción B — con el CLI
