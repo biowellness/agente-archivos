@@ -41,6 +41,21 @@ npx medplum post AccessPolicy "$(cat access-policies/patient-access-policy.json)
 
 Después asignala a la membership del paciente desde la app (paso 3 de la Opción A).
 
+### Opción C — script (recomendado: arregla TODOS los pacientes de una)
+
+`scripts/setup-patient-access.mjs` crea/actualiza la policy, la deja como
+**default de pacientes** (para los nuevos) y la **asigna a todos los pacientes
+actuales**. Necesita un `ClientApplication` **admin** del Project.
+
+```bash
+npm install   # una vez
+MEDPLUM_BASE_URL=https://api.medplum.com.ar/ \
+MEDPLUM_CLIENT_ID=xxxx MEDPLUM_CLIENT_SECRET=yyyy \
+node scripts/setup-patient-access.mjs
+```
+
+Al terminar, cada paciente debe **cerrar sesión y volver a entrar**.
+
 ## Para los próximos pacientes
 
 Para que **todo** paciente invitado la reciba sin tocarla a mano:
