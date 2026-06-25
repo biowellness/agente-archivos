@@ -24,6 +24,23 @@ catálogos (cuestionarios, agenda, profesionales, organización).
 > `%patient` lo enlaza Medplum automáticamente cuando la `ProjectMembership` apunta a un `Patient`.
 > Los `DiagnosticReport` son `readonly`: los arma el Bot, el paciente no los edita.
 
+## Capacidades del portal completo
+
+| Capacidad | Cómo se hace | Permiso |
+|---|---|---|
+| Registrarse / completar perfil | alta + edición de datos | alta = registro del Project (esta policy como **default de pacientes**); `Patient` escribible (lo suyo) |
+| Hacer reservas | ejecuta el Bot `bw-solicitar-turno` | Bot ejecutable + lectura de `Appointment`/`Slot`/`Schedule`/`HealthcareService` (Appointment **readonly**: lo crea el Bot) |
+| Completar observaciones | biomarcadores / formularios | `Observation` + `QuestionnaireResponse` escribibles (lo suyo) |
+| Enviar documentos | subir PDF + autorizar | `Binary` create + `DocumentReference` + `Consent` escribibles |
+| Ver su historia | resultados / plan / cobertura | `DiagnosticReport`, `CarePlan`, `MedicationRequest`, `Immunization`, `Task`, `Coverage`, `Invoice` → readonly |
+
+**Reservas por Bot, no por escritura directa:** `Appointment` queda `readonly` a propósito. El paciente
+*pide* el turno ejecutando `bw-solicitar-turno`; el Bot valida el slot y crea el `Appointment`. Así no
+puede fabricar turnos arbitrarios — mismo patrón que el upload (el paciente dispara, el backend crea).
+
+> Endurecimiento opcional: para separar lo autoreportado de lo validado por laboratorio, acotar la
+> escritura del paciente con categoría, ej. `Observation?subject=%patient&category=survey`.
+
 ## Cómo aplicarla
 
 ### Opción A — desde la app de Medplum (visual)

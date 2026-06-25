@@ -1,62 +1,73 @@
-import Anthropic from '@anthropic-ai/sdk';
-import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
-import { BotEvent, MedplumClient, createReference } from '@medplum/core';
-import type {
-  DiagnosticReport, DocumentReference, Observation, ObservationDefinition, Patient, Reference,
-} from '@medplum/fhirtypes';
-import * as z from 'zod/v4';
+import { BotEvent, MedplumClient, createReference, getReferenceString } from '@medplum/core';
+import type { DiagnosticReport, DocumentReference, Observation, Patient, Reference } from '@medplum/fhirtypes';
 
 /**
  * Bot: Parseo de PDF de laboratorio → DiagnosticReport + Observations
  *      ENRIQUECIDO con el catálogo de biomarcadores BioWellness.
  *
- * Drop-in para reemplazar bots/src/parse-lab-report.ts en biowellness/agente-archivos.
- * Conserva la extracción robusta del repo (Anthropic SDK + structured outputs Zod,
- * claude-opus-4-8) y le agrega la capa BioWellness:
- *   - match de cada analito contra las ObservationDefinition sembradas (por LOINC, luego nombre),
- *   - category de panel (panel-biomarcador),
- *   - extensión 'rango-funcional' con el óptimo Medicina 3.0 (sexo-específico),
- *   manteniendo el referenceRange del propio laboratorio.
+ * Se dispara por una Subscription al crearse/actualizarse un DocumentReference con PDF.
+ * Llama a la API de Claude por `fetch` (SIN @anthropic-ai/sdk) para que el Bot quede
+ * self-contained: en el runtime de Medplum solo está disponible @medplum/core, no
+ * dependencias npm externas. Usa structured outputs (JSON Schema) para recibir los
+ * analitos validados y los mapea a Observation + DiagnosticReport.
  *
  * Secret requerido en el Project: ANTHROPIC_API_KEY.
  */
 
-// ====================== Convenciones FHIR BioWellness ======================
-const BIO = 'https://bio.medplum.com.ar/fhir';
-const SYS = {
-  loinc: 'http://loinc.org',
-  ucum: 'http://unitsofmeasure.org',
-  interp: 'http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation',
-  obsCat: 'http://terminology.hl7.org/CodeSystem/observation-category',
-  panel: `${BIO}/CodeSystem/panel-biomarcador`,
-  funcExt: `${BIO}/StructureDefinition/rango-funcional`,
+interface LabItem {
+  name: string;
+  loincCode: string | null;
+  valueNumber: number | null;
+  valueText: string | null;
+  unit: string | null;
+  referenceRange: string | null;
+  interpretation: 'low' | 'normal' | 'high' | 'abnormal' | 'unknown';
+}
+
+interface LabReport {
+  reportDate: string | null;
+  performer: string | null;
+  observations: LabItem[];
+}
+
+const NULLABLE_STRING = { anyOf: [{ type: 'string' }, { type: 'null' }] };
+const NULLABLE_NUMBER = { anyOf: [{ type: 'number' }, { type: 'null' }] };
+
+// JSON Schema para structured outputs (additionalProperties:false + todo en required).
+const LAB_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    reportDate: NULLABLE_STRING,
+    performer: NULLABLE_STRING,
+    observations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          name: { type: 'string' },
+          loincCode: NULLABLE_STRING,
+          valueNumber: NULLABLE_NUMBER,
+          valueText: NULLABLE_STRING,
+          unit: NULLABLE_STRING,
+          referenceRange: NULLABLE_STRING,
+          interpretation: { type: 'string', enum: ['low', 'normal', 'high', 'abnormal', 'unknown'] },
+        },
+        required: ['name', 'loincCode', 'valueNumber', 'valueText', 'unit', 'referenceRange', 'interpretation'],
+      },
+    },
+  },
+  required: ['reportDate', 'performer', 'observations'],
 };
-
-// ====================== Esquema de extracción (igual que el repo) ======================
-const ObservationItem = z.object({
-  name: z.string().describe('Nombre del analito tal como aparece en el PDF (ej. "Glucosa")'),
-  loincCode: z.string().nullable().describe('Código LOINC solo si es seguro; de lo contrario null'),
-  valueNumber: z.number().nullable().describe('Valor numérico; null si el resultado es cualitativo'),
-  valueText: z.string().nullable().describe('Valor cualitativo/textual (ej. "Positivo"); null si es numérico'),
-  unit: z.string().nullable().describe('Unidad tal como figura (ej. "mg/dL")'),
-  referenceRange: z.string().nullable().describe('Rango de referencia textual si aparece'),
-  interpretation: z
-    .enum(['low', 'normal', 'high', 'abnormal', 'unknown'])
-    .describe('Interpretación respecto del rango de referencia'),
-});
-
-const LabReport = z.object({
-  reportDate: z.string().nullable().describe('Fecha del informe en formato YYYY-MM-DD si está disponible'),
-  performer: z.string().nullable().describe('Nombre del laboratorio que emite el informe'),
-  observations: z.array(ObservationItem),
-});
 
 const EXTRACTION_PROMPT = `Sos un asistente clínico que extrae resultados de un PDF de laboratorio.
 Devolvé únicamente los analitos presentes en el documento. No inventes valores.
 Reglas:
-- Un ítem por analito (incluí los componentes del hemograma: % y valores absolutos).
-- valueNumber: el valor numérico. Si el resultado es cualitativo, dejá valueNumber en null y completá valueText.
-- unit: la unidad tal como figura.
+- Un ítem por analito.
+- valueNumber: el valor numérico (convertí coma decimal a punto). Si el resultado es cualitativo,
+  dejá valueNumber en null y completá valueText (ej. "Positivo+", "No Contiene", "Escasas").
+- unit: la unidad tal como figura (ej. "mg/dL").
 - referenceRange: el rango de referencia textual si aparece.
 - loincCode: solo si conocés el código LOINC con seguridad; si no, null.
 - interpretation: low/normal/high/abnormal según el rango; unknown si no se puede determinar.
@@ -74,110 +85,92 @@ function toFhirDate(value: string | null | undefined): string | undefined {
   return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : undefined;
 }
 
-// ====================== Capa de catálogo BioWellness ======================
-interface CatInterval { gender?: 'male' | 'female'; low?: number; high?: number; }
-interface CatEntry {
-  name: string; loinc?: string; panel?: string; panelDisplay?: string;
-  optimal: CatInterval[]; optimalText?: string;
-}
+async function extractWithClaude(apiKey: string, base64Pdf: string): Promise<LabReport> {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-8',
+      max_tokens: 8000,
+      // Sin "thinking" para minimizar latencia (los Bots de Medplum tienen timeout).
+      // structured outputs ya garantiza el esquema. Se puede reactivar adaptive thinking
+      // si la extracción necesita más precisión y hay margen de tiempo.
+      output_config: { format: { type: 'json_schema', schema: LAB_SCHEMA } },
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64Pdf } },
+            { type: 'text', text: EXTRACTION_PROMPT },
+          ],
+        },
+      ],
+    }),
+  });
 
-function normName(s: string): string {
-  return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[():.]/g, '').replace(/\s+/g, ' ').trim();
-}
-
-// Alias nombre-de-laboratorio → nombre-de-catálogo (fallback cuando no hay LOINC)
-const ALIAS: Record<string, string> = {
-  'glucemia': 'glucosa en ayunas', 'colesterol hdl': 'hdl colesterol', 'colesterol ldl': 'ldl colesterol',
-  'colesterol ldl friedewald': 'ldl colesterol', 'trigliceridemia': 'trigliceridos', 'uricemia': 'acido urico',
-  'creatininemia': 'creatinina', 'apolipoproteina b': 'apob', 'vitamina b 12 cianocobalamina': 'vitamina b12',
-  'vitamina b12 cianocobalamina': 'vitamina b12', 'pcr cuantitativa': 'pcr ultrasensible hs-crp',
-  'shbg globulina ligadora de hormonas sexuales': 'shbg', 't4l-tiroxina libre': 't4 libre',
-  't3 libre - triiodotironina libre': 't3 libre', 'filtrado glomerular estimado ckd-epi 2021': 'egfr tfg estimada',
-  'ifge': 'egfr tfg estimada', 'zinc en suero': 'zinc',
-};
-
-async function loadCatalog(medplum: MedplumClient): Promise<{ byLoinc: Map<string, CatEntry>; byName: Map<string, CatEntry> }> {
-  const ods = await medplum.searchResources('ObservationDefinition', { _count: '200' });
-  const byLoinc = new Map<string, CatEntry>();
-  const byName = new Map<string, CatEntry>();
-  for (const od of ods) {
-    const loinc = od.code?.coding?.find((c) => c.system === SYS.loinc)?.code;
-    const panelCoding = od.category?.[0]?.coding?.[0];
-    const optimal: CatInterval[] = (od.qualifiedInterval ?? [])
-      .filter((qi) => (qi.context as any)?.coding?.[0]?.code === 'funcional-optimo')
-      .map((qi) => ({ gender: qi.gender as any, low: qi.range?.low?.value, high: qi.range?.high?.value }));
-    const optimalText = (od.extension ?? []).find((e) => e.url === `${BIO}/StructureDefinition/rango-optimo-texto`)?.valueString;
-    const entry: CatEntry = {
-      name: od.code?.text ?? '', loinc, panel: panelCoding?.code, panelDisplay: panelCoding?.display, optimal, optimalText,
-    };
-    if (loinc) byLoinc.set(loinc, entry);
-    if (entry.name) byName.set(normName(entry.name), entry);
+  if (!response.ok) {
+    throw new Error(`Anthropic API ${response.status}: ${await response.text()}`);
   }
-  return { byLoinc, byName };
-}
 
-function matchCatalog(idx: { byLoinc: Map<string, CatEntry>; byName: Map<string, CatEntry> }, name: string, loinc?: string | null): CatEntry | undefined {
-  if (loinc && idx.byLoinc.has(loinc)) return idx.byLoinc.get(loinc);
-  const n = normName(name);
-  if (idx.byName.has(n)) return idx.byName.get(n);
-  const alias = ALIAS[n];
-  if (alias && idx.byName.has(alias)) return idx.byName.get(alias);
-  for (const [k, v] of idx.byName) if (n.includes(k) || k.includes(n)) return v;
-  return undefined;
-}
-
-function pickOptimal(optimal: CatInterval[], sex?: string): CatInterval | undefined {
-  if (!optimal.length) return undefined;
-  if (sex === 'male' || sex === 'female') {
-    const g = optimal.find((i) => i.gender === sex);
-    if (g) return g;
+  const data = (await response.json()) as {
+    stop_reason?: string;
+    content?: { type: string; text?: string }[];
+  };
+  if (data.stop_reason === 'refusal') {
+    throw new Error('Claude rechazó la solicitud (refusal).');
   }
-  return optimal.find((i) => !i.gender) ?? optimal[0];
+  const text = data.content?.find((b) => b.type === 'text' && b.text)?.text;
+  if (!text) {
+    throw new Error('Claude no devolvió contenido de texto estructurado.');
+  }
+  return JSON.parse(text) as LabReport;
 }
 
-// ====================== Handler ======================
-export async function handler(medplum: MedplumClient, event: BotEvent<DocumentReference>): Promise<DiagnosticReport> {
+export async function handler(
+  medplum: MedplumClient,
+  event: BotEvent<DocumentReference>
+): Promise<DiagnosticReport | undefined> {
   const docRef = event.input;
 
   // 1. PDF adjunto
   const attachment =
     docRef.content?.find((c) => c.attachment?.contentType === 'application/pdf')?.attachment ??
     docRef.content?.[0]?.attachment;
-  if (!attachment?.url) throw new Error('El DocumentReference no tiene un PDF adjunto.');
+
+  // El front crea el DocumentReference sin URL y luego lo actualiza con el Binary.
+  // En el evento "create" todavía no hay PDF: se omite (se procesa al actualizarse).
+  if (!attachment?.url) {
+    console.log('DocumentReference sin PDF adjunto todavía; se omite.');
+    return undefined;
+  }
+
+  // Idempotencia: si ya generamos resultados para este documento, no reprocesar.
+  const yaProcesado = await medplum.searchResources('Observation', {
+    'derived-from': getReferenceString(docRef),
+    _count: '1',
+  });
+  if (yaProcesado.length > 0) {
+    console.log('Este DocumentReference ya fue procesado; se omite.');
+    return undefined;
+  }
 
   // 2. Descargar PDF
   const blob = await medplum.download(attachment.url);
   const base64Pdf = Buffer.from(await blob.arrayBuffer()).toString('base64');
 
-  // 3. Extracción (Claude) + catálogo + paciente, en paralelo
+  // 3. Extraer los datos con Claude (fetch directo).
   const apiKey = event.secrets['ANTHROPIC_API_KEY']?.valueString;
-  if (!apiKey) throw new Error('Falta el secret ANTHROPIC_API_KEY en el Project de Medplum.');
-  const anthropic = new Anthropic({ apiKey });
+  if (!apiKey) {
+    throw new Error('Falta el secret ANTHROPIC_API_KEY en el Project de Medplum.');
+  }
+  const report = await extractWithClaude(apiKey, base64Pdf);
+
+  // En el portal de pacientes el subject es siempre un Patient.
   const subject = docRef.subject as Reference<Patient> | undefined;
-
-  const [response, catalog, patient] = await Promise.all([
-    anthropic.messages.parse({
-      model: 'claude-opus-4-8',
-      max_tokens: 8000,
-      thinking: { type: 'adaptive' },
-      output_config: { format: zodOutputFormat(LabReport) },
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64Pdf } },
-          { type: 'text', text: EXTRACTION_PROMPT },
-        ],
-      }],
-    }),
-    loadCatalog(medplum),
-    subject ? medplum.readReference(subject).catch(() => undefined) : Promise.resolve(undefined),
-  ]);
-
-  const report = response.parsed_output;
-  if (!report) throw new Error('Claude no devolvió datos estructurados.');
-
-  const sex = (patient as Patient | undefined)?.gender;
   const effectiveDateTime = toFhirDate(report.reportDate) ?? docRef.date;
   const docRefReference = createReference(docRef);
 

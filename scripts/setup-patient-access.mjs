@@ -37,6 +37,17 @@ const medplum = new MedplumClient({ baseUrl });
 await medplum.startClientLogin(clientId, clientSecret);
 console.log('✓ Login OK');
 
+// El cliente debe ser admin del Project para crear/asignar AccessPolicy.
+if (!medplum.isProjectAdmin() && !medplum.isSuperAdmin()) {
+  console.error(
+    '\n✗ El ClientApplication NO es admin del Project (entra, pero no puede tocar AccessPolicy/memberships).\n' +
+      '  Solucioná una de estas y reintentá:\n' +
+      '   1) Hacé admin a ese client: Project Admin → Client Applications → (tu client) → Admin = on.\n' +
+      '   2) O usá la guía manual desde la app: access-policies/README.md (Opción A).\n'
+  );
+  process.exit(1);
+}
+
 // 1. Crear o actualizar la AccessPolicy (por nombre).
 let policy = await medplum.searchOne('AccessPolicy', 'name=' + encodeURIComponent(policyDef.name));
 policy = policy
