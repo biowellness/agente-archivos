@@ -2,7 +2,8 @@ import { BotEvent, MedplumClient, createReference, getReferenceString } from '@m
 import type { DiagnosticReport, DocumentReference, Observation, Patient, Reference } from '@medplum/fhirtypes';
 
 /**
- * Bot: Parseo de PDF de laboratorio → DiagnosticReport + Observations.
+ * Bot: Parseo de PDF de laboratorio → DiagnosticReport + Observations
+ *      ENRIQUECIDO con el catálogo de biomarcadores BioWellness.
  *
  * Se dispara por una Subscription al crearse/actualizarse un DocumentReference con PDF.
  * Llama a la API de Claude por `fetch` (SIN @anthropic-ai/sdk) para que el Bot quede
@@ -135,7 +136,7 @@ export async function handler(
 ): Promise<DiagnosticReport | undefined> {
   const docRef = event.input;
 
-  // 1. Localizar el PDF adjunto.
+  // 1. PDF adjunto
   const attachment =
     docRef.content?.find((c) => c.attachment?.contentType === 'application/pdf')?.attachment ??
     docRef.content?.[0]?.attachment;
@@ -157,7 +158,7 @@ export async function handler(
     return undefined;
   }
 
-  // 2. Descargar el PDF y pasarlo a base64.
+  // 2. Descargar PDF
   const blob = await medplum.download(attachment.url);
   const base64Pdf = Buffer.from(await blob.arrayBuffer()).toString('base64');
 
@@ -173,75 +174,71 @@ export async function handler(
   const effectiveDateTime = toFhirDate(report.reportDate) ?? docRef.date;
   const docRefReference = createReference(docRef);
 
-  // 4. Crear una Observation por analito.
+  // 4. Una Observation por analito, enriquecida con el catálogo
   const resultRefs = [];
   for (const item of report.observations) {
+    const cat = matchCatalog(catalog, item.name, item.loincCode);
+    const loinc = cat?.loinc ?? item.loincCode ?? undefined;
+
     const observation: Observation = {
       resourceType: 'Observation',
       status: 'final',
       category: [
-        {
-          coding: [
-            {
-              system: 'http://terminology.hl7.org/CodeSystem/observation-category',
-              code: 'laboratory',
-              display: 'Laboratory',
-            },
-          ],
-        },
+        { coding: [{ system: SYS.obsCat, code: 'laboratory', display: 'Laboratory' }] },
+        ...(cat?.panel ? [{ coding: [{ system: SYS.panel, code: cat.panel, display: cat.panelDisplay }] }] : []),
       ],
-      code: {
-        coding: item.loincCode ? [{ system: 'http://loinc.org', code: item.loincCode }] : undefined,
-        text: item.name,
-      },
+      code: { coding: loinc ? [{ system: SYS.loinc, code: loinc }] : undefined, text: item.name },
       subject,
       effectiveDateTime,
       derivedFrom: [docRefReference],
     };
 
     if (item.valueNumber !== null) {
-      observation.valueQuantity = { value: item.valueNumber, unit: item.unit ?? undefined };
+      observation.valueQuantity = {
+        value: item.valueNumber,
+        ...(item.unit ? { unit: item.unit, system: SYS.ucum, code: item.unit } : {}),
+      };
     } else if (item.valueText) {
       observation.valueString = item.valueText;
     }
-    if (item.referenceRange) {
-      observation.referenceRange = [{ text: item.referenceRange }];
-    }
+
+    if (item.referenceRange) observation.referenceRange = [{ text: item.referenceRange }];
+
     const interp = INTERPRETATION[item.interpretation];
     if (interp) {
-      observation.interpretation = [
-        {
-          coding: [
-            {
-              system: 'http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation',
-              code: interp.code,
-              display: interp.display,
-            },
-          ],
-        },
-      ];
+      observation.interpretation = [{ coding: [{ system: SYS.interp, code: interp.code, display: interp.display }] }];
+    }
+
+    // --- BioWellness: rango funcional óptimo desde el catálogo (sexo-específico) ---
+    const opt = pickOptimal(cat?.optimal ?? [], sex);
+    if (opt && (opt.low != null || opt.high != null)) {
+      let fInterp: 'H' | 'L' | 'N' | undefined;
+      if (item.valueNumber != null) {
+        if (opt.low != null && item.valueNumber < opt.low) fInterp = 'L';
+        else if (opt.high != null && item.valueNumber > opt.high) fInterp = 'H';
+        else fInterp = 'N';
+      }
+      observation.extension = [{
+        url: SYS.funcExt,
+        extension: [
+          ...(opt.low != null ? [{ url: 'low', valueQuantity: { value: opt.low, ...(item.unit ? { unit: item.unit, system: SYS.ucum, code: item.unit } : {}) } }] : []),
+          ...(opt.high != null ? [{ url: 'high', valueQuantity: { value: opt.high, ...(item.unit ? { unit: item.unit, system: SYS.ucum, code: item.unit } : {}) } }] : []),
+          ...(fInterp ? [{ url: 'interpretacion', valueCode: fInterp }] : []),
+          { url: 'fuente', valueString: cat?.optimalText ? `Óptimo Medicina 3.0: ${cat.optimalText}` : 'Rango funcional óptimo (catálogo BioWellness)' },
+        ],
+      }] as any;
     }
 
     const created = await medplum.createResource(observation);
     resultRefs.push(createReference(created));
   }
 
-  // 5. Crear el DiagnosticReport que agrupa las Observations.
+  // 5. DiagnosticReport que agrupa las Observations
   const diagnosticReport: DiagnosticReport = {
     resourceType: 'DiagnosticReport',
     status: 'final',
-    category: [
-      {
-        coding: [
-          { system: 'http://terminology.hl7.org/CodeSystem/v2-0074', code: 'LAB', display: 'Laboratory' },
-        ],
-      },
-    ],
-    code: {
-      text: report.performer
-        ? `Resultados de laboratorio — ${report.performer}`
-        : 'Resultados de laboratorio',
-    },
+    category: [{ coding: [{ system: 'http://terminology.hl7.org/CodeSystem/v2-0074', code: 'LAB', display: 'Laboratory' }] }],
+    code: { text: report.performer ? `Resultados de laboratorio — ${report.performer}` : 'Resultados de laboratorio' },
     subject,
     effectiveDateTime,
     issued: new Date().toISOString(),
