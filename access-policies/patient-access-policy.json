@@ -1,32 +1,107 @@
 {
   "resourceType": "AccessPolicy",
-  "name": "Paciente — Agente Archivos",
+  "name": "Paciente — Portal",
   "resource": [
     {
       "resourceType": "Patient",
-      "criteria": "Patient?_compartment=%patient",
-      "readonly": true
-    },
-    {
-      "resourceType": "DocumentReference",
-      "criteria": "DocumentReference?_compartment=%patient"
-    },
-    {
-      "resourceType": "Consent",
-      "criteria": "Consent?_compartment=%patient"
-    },
-    {
-      "resourceType": "DiagnosticReport",
-      "criteria": "DiagnosticReport?_compartment=%patient",
-      "readonly": true
+      "criteria": "Patient?_id=%patient.id"
     },
     {
       "resourceType": "Observation",
-      "criteria": "Observation?_compartment=%patient",
+      "criteria": "Observation?subject=%patient"
+    },
+    {
+      "resourceType": "QuestionnaireResponse",
+      "criteria": "QuestionnaireResponse?subject=%patient"
+    },
+    {
+      "resourceType": "DocumentReference",
+      "criteria": "DocumentReference?subject=%patient"
+    },
+    {
+      "resourceType": "Communication",
+      "criteria": "Communication?subject=%patient"
+    },
+    {
+      "resourceType": "Appointment",
+      "readonly": true,
+      "criteria": "Appointment?actor=%patient"
+    },
+    {
+      "resourceType": "Coverage",
+      "readonly": true,
+      "criteria": "Coverage?beneficiary=%patient"
+    },
+    {
+      "resourceType": "Invoice",
+      "readonly": true,
+      "criteria": "Invoice?subject=%patient"
+    },
+    {
+      "resourceType": "DiagnosticReport",
+      "readonly": true,
+      "criteria": "DiagnosticReport?subject=%patient"
+    },
+    {
+      "resourceType": "CarePlan",
+      "readonly": true,
+      "criteria": "CarePlan?subject=%patient"
+    },
+    {
+      "resourceType": "MedicationRequest",
+      "readonly": true,
+      "criteria": "MedicationRequest?patient=%patient"
+    },
+    {
+      "resourceType": "Immunization",
+      "readonly": true,
+      "criteria": "Immunization?patient=%patient"
+    },
+    {
+      "resourceType": "Task",
+      "readonly": true,
+      "criteria": "Task?patient=%patient"
+    },
+    {
+      "resourceType": "ObservationDefinition",
       "readonly": true
     },
     {
-      "resourceType": "Binary"
+      "resourceType": "Questionnaire",
+      "readonly": true
+    },
+    {
+      "resourceType": "Schedule",
+      "readonly": true
+    },
+    {
+      "resourceType": "Slot",
+      "readonly": true
+    },
+    {
+      "resourceType": "HealthcareService",
+      "readonly": true
+    },
+    {
+      "resourceType": "Practitioner",
+      "readonly": true
+    },
+    {
+      "resourceType": "Organization",
+      "readonly": true
+    },
+    {
+      "resourceType": "Consent",
+      "criteria": "Consent?patient=%patient"
+    },
+    {
+      "resourceType": "Bot",
+      "readonly": true,
+      "criteria": "Bot?name=bw-solicitar-turno"
+    },
+    {
+      "resourceType": "Binary",
+      "interaction": ["read", "vread", "update", "delete", "history", "create", "search"]
     }
   ]
 }
