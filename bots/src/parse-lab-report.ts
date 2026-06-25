@@ -94,8 +94,10 @@ async function extractWithClaude(apiKey: string, base64Pdf: string): Promise<Lab
     },
     body: JSON.stringify({
       model: 'claude-opus-4-8',
-      max_tokens: 16000,
-      thinking: { type: 'adaptive' },
+      max_tokens: 8000,
+      // Sin "thinking" para minimizar latencia (los Bots de Medplum tienen timeout).
+      // structured outputs ya garantiza el esquema. Se puede reactivar adaptive thinking
+      // si la extracción necesita más precisión y hay margen de tiempo.
       output_config: { format: { type: 'json_schema', schema: LAB_SCHEMA } },
       messages: [
         {
