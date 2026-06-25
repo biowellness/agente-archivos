@@ -85,6 +85,156 @@ function toFhirDate(value: string | null | undefined): string | undefined {
   return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : undefined;
 }
 
+// ===== Catálogo de biomarcadores BioWellness =====
+
+type Sex = 'male' | 'female' | 'unknown';
+
+interface OptimalRange {
+  /** Si se omite, el rango aplica a ambos sexos. */
+  sex?: 'male' | 'female';
+  low?: number;
+  high?: number;
+}
+
+interface CatalogEntry {
+  /** Nombres/alias del analito para matchear (se normalizan: sin acentos, minúsculas). */
+  aliases: string[];
+  loinc?: string;
+  /** Código corto del panel y su nombre visible. */
+  panel?: string;
+  panelDisplay?: string;
+  /** Rangos óptimos/funcionales (objetivos de bienestar, NO rango de laboratorio). */
+  optimal?: OptimalRange[];
+  optimalText?: string;
+}
+
+const SYS = {
+  obsCat: 'http://terminology.hl7.org/CodeSystem/observation-category',
+  loinc: 'http://loinc.org',
+  ucum: 'http://unitsofmeasure.org',
+  interp: 'http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation',
+  panel: 'https://biowellness.com.ar/fhir/CodeSystem/panel',
+  funcExt: 'https://biowellness.com.ar/fhir/StructureDefinition/rango-optimo',
+} as const;
+
+/**
+ * ⚠️ PUNTO DE PARTIDA — a validar y mantener por el equipo clínico.
+ * Los rangos "óptimos" son objetivos de bienestar (estilo "Medicina 3.0"), NO rangos
+ * de referencia de laboratorio. Las unidades son las del laboratorio (mg/dL salvo aclaración).
+ */
+const catalog: CatalogEntry[] = [
+  {
+    aliases: ['glucosa', 'glucemia', 'glucosa en ayunas'],
+    loinc: '1558-6',
+    panel: 'metabolico',
+    panelDisplay: 'Metabólico',
+    optimal: [{ low: 70, high: 90 }],
+    optimalText: 'Glucosa en ayunas 70–90 mg/dL',
+  },
+  {
+    aliases: ['hemoglobina glicosilada', 'hba1c', 'hemoglobina a1c'],
+    loinc: '4548-4',
+    panel: 'metabolico',
+    panelDisplay: 'Metabólico',
+    optimal: [{ high: 5.4 }],
+    optimalText: 'HbA1c < 5,4 %',
+  },
+  {
+    aliases: ['trigliceridos'],
+    loinc: '2571-8',
+    panel: 'lipidos',
+    panelDisplay: 'Perfil lipídico',
+    optimal: [{ high: 100 }],
+    optimalText: 'Triglicéridos < 100 mg/dL',
+  },
+  {
+    aliases: ['colesterol hdl', 'hdl', 'hdl colesterol'],
+    loinc: '2085-9',
+    panel: 'lipidos',
+    panelDisplay: 'Perfil lipídico',
+    optimal: [
+      { sex: 'male', low: 40 },
+      { sex: 'female', low: 50 },
+    ],
+    optimalText: 'HDL ≥ 40 (H) / ≥ 50 (M) mg/dL',
+  },
+  {
+    aliases: ['colesterol ldl', 'ldl', 'ldl colesterol'],
+    loinc: '2089-1',
+    panel: 'lipidos',
+    panelDisplay: 'Perfil lipídico',
+  },
+  {
+    aliases: ['colesterol total', 'colesterol'],
+    loinc: '2093-3',
+    panel: 'lipidos',
+    panelDisplay: 'Perfil lipídico',
+  },
+  {
+    aliases: ['tsh', 'tirotrofina'],
+    loinc: '3016-3',
+    panel: 'tiroides',
+    panelDisplay: 'Tiroides',
+    optimal: [{ low: 0.5, high: 2.5 }],
+    optimalText: 'TSH 0,5–2,5 µUI/mL',
+  },
+  {
+    aliases: ['vitamina d', '25 hidroxivitamina d', '25-oh-d', '25 oh vitamina d'],
+    loinc: '1989-3',
+    panel: 'vitaminas',
+    panelDisplay: 'Vitaminas',
+    optimal: [{ low: 40, high: 60 }],
+    optimalText: 'Vitamina D 40–60 ng/mL',
+  },
+  {
+    aliases: ['cortisol', 'cortisol en sangre', 'cortisol matutino'],
+    loinc: '2143-6',
+    panel: 'hormonas',
+    panelDisplay: 'Hormonas',
+  },
+  {
+    aliases: ['psa', 'antigeno prostatico total', 'antigeno prostatico especifico', 'psa total'],
+    loinc: '2857-1',
+    panel: 'prostata',
+    panelDisplay: 'Próstata',
+  },
+  {
+    aliases: ['psa libre', 'antigeno prostatico libre'],
+    loinc: '10886-0',
+    panel: 'prostata',
+    panelDisplay: 'Próstata',
+  },
+];
+
+function normalizeText(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function matchCatalog(cat: CatalogEntry[], name: string, loinc: string | null): CatalogEntry | undefined {
+  if (loinc) {
+    const byLoinc = cat.find((e) => e.loinc === loinc);
+    if (byLoinc) {
+      return byLoinc;
+    }
+  }
+  const n = normalizeText(name);
+  return cat.find((e) =>
+    e.aliases.some((a) => {
+      const na = normalizeText(a);
+      return n === na || n.includes(na);
+    })
+  );
+}
+
+function pickOptimal(optimal: OptimalRange[], sex: Sex): OptimalRange | undefined {
+  const bySex = sex !== 'unknown' ? optimal.find((o) => o.sex === sex) : undefined;
+  return bySex ?? optimal.find((o) => !o.sex);
+}
+
 async function extractWithClaude(apiKey: string, base64Pdf: string): Promise<LabReport> {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -173,6 +323,19 @@ export async function handler(
   const subject = docRef.subject as Reference<Patient> | undefined;
   const effectiveDateTime = toFhirDate(report.reportDate) ?? docRef.date;
   const docRefReference = createReference(docRef);
+
+  // Sexo del paciente (para elegir el rango óptimo correcto del catálogo).
+  let sex: Sex = 'unknown';
+  if (subject) {
+    try {
+      const patient = await medplum.readReference(subject);
+      if (patient.gender === 'male' || patient.gender === 'female') {
+        sex = patient.gender;
+      }
+    } catch {
+      // Si no se puede leer el paciente, el sexo queda 'unknown'.
+    }
+  }
 
   // 4. Una Observation por analito, enriquecida con el catálogo
   const resultRefs = [];
