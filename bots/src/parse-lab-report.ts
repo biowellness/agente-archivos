@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
-import { BotEvent, MedplumClient, createReference } from '@medplum/core';
+import { BotEvent, MedplumClient, createReference, getReferenceString } from '@medplum/core';
 import type { DiagnosticReport, DocumentReference, Observation, Patient, Reference } from '@medplum/fhirtypes';
 import * as z from 'zod/v4';
 
@@ -63,15 +63,29 @@ function toFhirDate(value: string | null | undefined): string | undefined {
 export async function handler(
   medplum: MedplumClient,
   event: BotEvent<DocumentReference>
-): Promise<DiagnosticReport> {
+): Promise<DiagnosticReport | undefined> {
   const docRef = event.input;
 
   // 1. Localizar el PDF adjunto.
   const attachment =
     docRef.content?.find((c) => c.attachment?.contentType === 'application/pdf')?.attachment ??
     docRef.content?.[0]?.attachment;
+
+  // El front crea el DocumentReference sin URL y luego lo actualiza con el Binary.
+  // En el evento "create" todavía no hay PDF: se omite (se procesa al actualizarse).
   if (!attachment?.url) {
-    throw new Error('El DocumentReference no tiene un PDF adjunto.');
+    console.log('DocumentReference sin PDF adjunto todavía; se omite.');
+    return undefined;
+  }
+
+  // Idempotencia: si ya generamos resultados para este documento, no reprocesar.
+  const yaProcesado = await medplum.searchResources('Observation', {
+    'derived-from': getReferenceString(docRef),
+    _count: '1',
+  });
+  if (yaProcesado.length > 0) {
+    console.log('Este DocumentReference ya fue procesado; se omite.');
+    return undefined;
   }
 
   // 2. Descargar el PDF y pasarlo a base64.
