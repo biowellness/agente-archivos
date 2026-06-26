@@ -308,9 +308,20 @@ export async function handler(
     return undefined;
   }
 
-  // 2. Descargar PDF
+  // 2. Descargar PDF (con diagnóstico: verificar que sean bytes de PDF reales).
+  console.log(`Descargando attachment: url=${attachment.url} contentType=${attachment.contentType}`);
   const blob = await medplum.download(attachment.url);
-  const base64Pdf = Buffer.from(await blob.arrayBuffer()).toString('base64');
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const header =
+    bytes.length >= 5 ? String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]) : '';
+  console.log(`Descargado: ${bytes.length} bytes, header="${header}"`);
+  if (header !== '%PDF-') {
+    const preview = Buffer.from(bytes.subarray(0, 400)).toString('utf8');
+    throw new Error(
+      `El contenido descargado no es un PDF (header="${header}", ${bytes.length} bytes). Preview: ${preview}`
+    );
+  }
+  const base64Pdf = Buffer.from(bytes).toString('base64');
 
   // 3. Extraer los datos con Claude (fetch directo).
   const apiKey = event.secrets['ANTHROPIC_API_KEY']?.valueString;
