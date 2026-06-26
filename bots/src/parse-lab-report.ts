@@ -308,15 +308,30 @@ export async function handler(
     return undefined;
   }
 
-  // 2. Descargar PDF (con diagnóstico: verificar que sean bytes de PDF reales).
-  console.log(`Descargando attachment: url=${attachment.url} contentType=${attachment.contentType}`);
-  const blob = await medplum.download(attachment.url);
-  const bytes = new Uint8Array(await blob.arrayBuffer());
+  // 2. Descargar el PDF.
+  // Medplum reescribe los Binary a URLs S3 prefirmadas (firma en la query: X-Amz-*).
+  // Esas URLs hay que pedirlas con fetch directo, SIN header Authorization, porque S3
+  // rechaza tener dos mecanismos de auth a la vez. Si fuera una URL servida por Medplum,
+  // usamos medplum.download (que sí agrega la auth necesaria).
+  const url = attachment.url;
+  const isPresigned = /[?&]X-Amz-(Signature|Algorithm)=/.test(url);
+  let bytes: Uint8Array;
+  if (isPresigned) {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      throw new Error(`No se pudo descargar el PDF de S3 (${resp.status}): ${await resp.text()}`);
+    }
+    bytes = new Uint8Array(await resp.arrayBuffer());
+  } else {
+    const blob = await medplum.download(url);
+    bytes = new Uint8Array(await blob.arrayBuffer());
+  }
+
   const header =
     bytes.length >= 5 ? String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]) : '';
-  console.log(`Descargado: ${bytes.length} bytes, header="${header}"`);
+  console.log(`PDF descargado: ${bytes.length} bytes, header="${header}"`);
   if (header !== '%PDF-') {
-    const preview = Buffer.from(bytes.subarray(0, 400)).toString('utf8');
+    const preview = Buffer.from(bytes.subarray(0, 300)).toString('utf8');
     throw new Error(
       `El contenido descargado no es un PDF (header="${header}", ${bytes.length} bytes). Preview: ${preview}`
     );
